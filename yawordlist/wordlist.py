@@ -5,6 +5,8 @@ from typing import List, Optional
 
 import typer
 
+from spellchecker import SpellChecker
+
 # -----------------------------
 # Data structures
 # -----------------------------
@@ -562,10 +564,14 @@ def main(
 
             print("Structured Spelling Game (letter-by-letter mode)\n")
 
+            spell = SpellChecker()
+            unknown = spell.unknown([w.lower() for w in words])
+
             # Confirm list with user
             print("Loaded word list:")
             for i, w in enumerate(words, start=1):
-                print(f"{i:2d}. {w}")
+                mark = "*" if w.lower() in unknown else " "
+                print(f"{i:2d}. {w}{mark}")
             print()
 
             if not prompt_yes_no(
