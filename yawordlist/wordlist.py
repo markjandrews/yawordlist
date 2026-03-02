@@ -187,6 +187,9 @@ def _get_key_event() -> Optional[str]:
     import msvcrt
 
     ch = msvcrt.getwch()
+    # Normalize Enter to a single value. Some environments may deliver "\n".
+    if ch == "\n":
+        ch = "\r"
     # Ignore special keys (arrows/function keys) which come as a two-character sequence.
     if ch in ("\x00", "\xe0"):
         code = msvcrt.getwch()
@@ -197,6 +200,24 @@ def _get_key_event() -> Optional[str]:
             "M": "<RIGHT>",
         }.get(code)
     return ch
+
+
+def _poll_key_event(timeout_s: float) -> Optional[str]:
+    """Poll for a key event for up to timeout_s seconds.
+
+    Returns None if no key is pressed within the timeout.
+
+    Windows only (msvcrt).
+    """
+    import msvcrt
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if msvcrt.kbhit():
+            return _get_key_event()
+        time.sleep(0.01)
+    return None
 
 
 def press_any_key_to_exit(prompt: str = "Press any key to exit...") -> None:
@@ -237,6 +258,7 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
         record = state.words[word_index]
         current = ""
         position = 0
+        pending_ev: Optional[str] = None
 
         def print_input_prompt() -> None:
             print("> ", end="", flush=True)
@@ -248,7 +270,11 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
         print_input_prompt()
 
         while True:
-            ev = _get_key_event()
+            if pending_ev is not None:
+                ev = pending_ev
+                pending_ev = None
+            else:
+                ev = _get_key_event()
             if ev is None:
                 continue
 
@@ -302,8 +328,10 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
 
                 # Empty enter: proceed to next word, or finish if last.
                 if word_index == len(state.words) - 1:
-                    record.attempted = True
-                    record.result = "stopped"
+                    # Only mark stopped if the last word has not been attempted yet.
+                    if not record.attempts:
+                        record.attempted = True
+                        record.result = "stopped"
                     return state
                 word_index += 1
                 break
@@ -392,6 +420,48 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
             print(ev, end="", flush=True)
 
             if position == len(record.word):
+                # Grace window: allow an immediate trailing key to be treated as part of the same attempt.
+                # - Enter commits immediately.
+                # - Backspace re-opens editing.
+                # - Printable non-whitespace extends the attempt and makes it incorrect.
+                # - Navigation/other keys commit correct and then are processed next.
+                ev2 = _poll_key_event(0.75)
+
+                if ev2 in ("\r", "\n") or ev2 is None:
+                    print("\nCORRECT\n")
+                    record.attempts.append(current)
+                    record.attempted = True
+                    record.result = "correct"
+                    current = ""
+                    position = 0
+                    _print_word_context(record, skip_command=skip_command)
+                    print_input_prompt()
+                    continue
+
+                if ev2 in ("\b", "\x7f"):
+                    # Remove the last character and continue editing.
+                    current = current[:-1]
+                    position = len(current)
+                    print("\b \b", end="", flush=True)
+                    continue
+
+                if len(ev2) == 1 and ev2.isprintable() and (not ev2.isspace()):
+                    # Trailing character within grace: treat as part of the same attempt -> incorrect at <end>.
+                    attempt = f"{current}{ev2}"
+                    print(ev2, end="", flush=True)
+                    print(
+                        f"\nIncorrect letter '{ev2}' at position {len(record.word) + 1} (expected <end>).\n"
+                    )
+                    record.attempts.append(attempt)
+                    record.attempted = True
+                    current = ""
+                    position = 0
+                    _print_word_context(record, skip_command=skip_command)
+                    print_input_prompt()
+                    continue
+
+                # Any other key: commit correct, then process it normally next.
+                pending_ev = ev2
                 print("\nCORRECT\n")
                 record.attempts.append(current)
                 record.attempted = True
