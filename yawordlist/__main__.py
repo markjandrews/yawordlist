@@ -1,5 +1,3 @@
-
-
 if __name__ == "__main__":
-    from .wordlist import main
-    main()
+    from .wordlist import app
+    app()

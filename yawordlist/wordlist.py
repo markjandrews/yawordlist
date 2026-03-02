@@ -3,6 +3,8 @@ from pathlib import Path
 import random
 from typing import List, Optional
 
+import typer
+
 # -----------------------------
 # Data structures
 # -----------------------------
@@ -426,7 +428,14 @@ def print_session_summary(state: SessionState, skip_command: str) -> None:
         correct_count = _count_correct_attempts(w)
         incorrect_count = _count_incorrect_attempts(w, skip_command=skip_command)
         marks = _attempt_marks(w, skip_command=skip_command)
-        print(f"  Word #{w.index} ({w.word}) {result} | correct={correct_count} incorrect={incorrect_count} | {marks}: {attempts_str}")
+        if marks:
+            print(
+                f"  Word #{w.index} ({w.word}) {result} | correct={correct_count} incorrect={incorrect_count} | {marks}: {attempts_str}"
+            )
+        else:
+            print(
+                f"  Word #{w.index} ({w.word}) {result} | correct={correct_count} incorrect={incorrect_count} | {attempts_str}"
+            )
 
     print("\nSummary complete.\n")
 
@@ -434,40 +443,96 @@ def print_session_summary(state: SessionState, skip_command: str) -> None:
 # Entry point
 # -----------------------------
 
-def load_words_from_file(words_path: Optional[Path] = None) -> List[str]:
-    """Load a word list from a text file (one word per line)."""
-    if words_path is None:
-        # Project layout:
-        #   <repo-root>/words.txt
-        #   <repo-root>/yawordlist/wordlist.py
-        words_path = Path(__file__).resolve().parents[1] / "words.txt"
+def _default_words_dir() -> Path:
+    # Project layout:
+    #   <repo-root>/words/*.txt
+    #   <repo-root>/yawordlist/wordlist.py
+    return Path(__file__).resolve().parents[1] / "words"
 
-    try:
-        text = words_path.read_text(encoding="utf-8")
-    except FileNotFoundError as e:
+
+def load_word_modules(words_dir: Optional[Path] = None) -> List[List[str]]:
+    """Load words from all .txt files in a directory.
+
+    Returns a list of "modules", one per file, where each module is the list of
+    words (lowercased, preserving duplicates).
+    """
+    base_dir = words_dir if words_dir is not None else _default_words_dir()
+
+    if base_dir.exists() and base_dir.is_file():
+        raise ValueError(f"Expected a directory, but got a file path: {base_dir}")
+
+    if not base_dir.exists():
         raise FileNotFoundError(
-            f"Required file not found: {words_path}\n"
-            "Create words.txt in the project root (same folder as setup files).\n"
-            "Format: one word per line.\n"
-            "Example:\n"
+            f"Required directory not found: {base_dir}\n"
+            "Create a 'words' folder in the project root and add one or more .txt files.\n"
+            "Each .txt file should contain one word per line.\n"
+            "Example file: words/words_wk1.txt\n"
             "  because\n"
             "  friend\n"
             "  beautiful\n"
-        ) from e
+        )
 
-    words = [line.strip().lower() for line in text.splitlines() if line.strip()]
-    if not words:
-        raise ValueError(f"No words found in: {words_path}")
-    return words
+    txt_files = sorted(base_dir.glob("*.txt"))
+    if not txt_files:
+        raise FileNotFoundError(
+            f"No .txt files found in: {base_dir}\n"
+            "Add one or more files like 'words/words_wk1.txt' with one word per line.\n"
+        )
 
-def main():
+    modules: List[List[str]] = []
+    for path in txt_files:
+        text = path.read_text(encoding="utf-8")
+        words = [line.strip().lower() for line in text.splitlines() if line.strip()]
+        if words:
+            modules.append(words)
+
+    if not modules:
+        raise ValueError(f"No words found in any .txt files under: {base_dir}")
+
+    return modules
+
+
+def load_words(*, level: int = 1, words_dir: Optional[Path] = None) -> List[str]:
+    """Load words using module-based shuffling.
+
+    level=1 (default): shuffle within each file/module, but never mix words between files.
+    level=2: mix all words from all files, then shuffle together.
+    """
+    modules = load_word_modules(words_dir=words_dir)
+
+    if level == 1:
+        out: List[str] = []
+        for module_words in modules:
+            random.shuffle(module_words)
+            out.extend(module_words)
+        return out
+
+    if level == 2:
+        out = [w for module_words in modules for w in module_words]
+        random.shuffle(out)
+        return out
+
+    raise ValueError("level must be 1 or 2")
+
+app = typer.Typer(add_completion=False)
+
+
+@app.command()
+def main(
+    level: int = typer.Option(
+        1,
+        "--level",
+        "-l",
+        min=1,
+        max=2,
+        help="1 = shuffle within each file; 2 = mix all files then shuffle",
+    ),
+):
     try:
-        words = load_words_from_file()
+        words = load_words(level=level)
     except (FileNotFoundError, ValueError) as e:
         print(str(e))
-        return
-
-    random.shuffle(words)
+        raise typer.Exit(code=1)
 
     skip_command = choose_skip_command(words, base="/pass")
 
@@ -481,12 +546,13 @@ def main():
 
     if not prompt_yes_no("Confirm this is the list you want to use?", default=True):
         print("\nExiting. Update input list to continue.")
-        return
+        raise typer.Exit(code=0)
 
     print(f"\nSkip token: {skip_command}\n")
 
     state = run_spelling_session(words, skip_command=skip_command)
     print_session_summary(state, skip_command=skip_command)
 
+
 if __name__ == "__main__":
-    main()
+    app()
