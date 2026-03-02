@@ -1,0 +1,2 @@
+yawordlist/tts/*.onnx filter=lfs diff=lfs merge=lfs -text
+yawordlist/tts/*.onnx.json filter=lfs diff=lfs merge=lfs -text
