@@ -196,6 +196,27 @@ def _get_key_event() -> Optional[str]:
         }.get(code)
     return ch
 
+
+def press_any_key_to_exit(prompt: str = "Press any key to exit...") -> None:
+    """Block until a key is pressed.
+
+    Intended for launching via desktop shortcuts so the console doesn't close
+    immediately after the program finishes.
+    """
+    try:
+        import msvcrt
+
+        print(f"\n{prompt}")
+        ch = msvcrt.getwch()
+        # Swallow the second code for special keys.
+        if ch in ("\x00", "\xe0"):
+            msvcrt.getwch()
+    except Exception:
+        try:
+            input(f"\n{prompt}")
+        except EOFError:
+            return
+
 # -----------------------------
 # Core game logic
 # -----------------------------
@@ -529,29 +550,46 @@ def main(
     ),
 ):
     try:
-        words = load_words(level=level)
-    except (FileNotFoundError, ValueError) as e:
-        print(str(e))
-        raise typer.Exit(code=1)
+        while True:
+            try:
+                words = load_words(level=level)
+            except (FileNotFoundError, ValueError) as e:
+                print(str(e))
+                press_any_key_to_exit()
+                raise typer.Exit(code=1)
 
-    skip_command = choose_skip_command(words, base="/pass")
+            skip_command = choose_skip_command(words, base="/pass")
 
-    print("Structured Spelling Game (letter-by-letter mode)\n")
+            print("Structured Spelling Game (letter-by-letter mode)\n")
 
-    # Confirm list with user
-    print("Loaded word list:")
-    for i, w in enumerate(words, start=1):
-        print(f"{i:2d}. {w}")
-    print()
+            # Confirm list with user
+            print("Loaded word list:")
+            for i, w in enumerate(words, start=1):
+                print(f"{i:2d}. {w}")
+            print()
 
-    if not prompt_yes_no("Confirm this is the list you want to use?", default=True):
-        print("\nExiting. Update input list to continue.")
-        raise typer.Exit(code=0)
+            if not prompt_yes_no(
+                "Confirm this is the list you want to use?", default=True
+            ):
+                print("\nExiting. Update input list to continue.")
+                press_any_key_to_exit()
+                raise typer.Exit(code=0)
 
-    print(f"\nSkip token: {skip_command}\n")
+            print(f"\nSkip token: {skip_command}\n")
 
-    state = run_spelling_session(words, skip_command=skip_command)
-    print_session_summary(state, skip_command=skip_command)
+            state = run_spelling_session(words, skip_command=skip_command)
+            print_session_summary(state, skip_command=skip_command)
+
+            if prompt_yes_no("Play again?", default=False):
+                print()
+                continue
+
+            press_any_key_to_exit()
+            raise typer.Exit(code=0)
+    except KeyboardInterrupt:
+        print("\nInterrupted.\n")
+        press_any_key_to_exit()
+        raise typer.Exit(code=130)
 
 
 if __name__ == "__main__":
