@@ -271,10 +271,7 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
 
             # Ctrl+C ends session (summary).
             if ev == "\x03":
-                print()
-                record.attempted = True
-                record.result = "stopped"
-                return state
+                raise KeyboardInterrupt
 
             # Ctrl+Z undoes the last recorded attempt for this word.
             if ev == "\x1a":
@@ -570,8 +567,9 @@ def main(
             # Confirm list with user
             print("Loaded word list:")
             for i, w in enumerate(words, start=1):
-                mark = "*" if w.lower() in unknown else " "
-                print(f"{i:2d}. {w}{mark}")
+                if w.lower() in unknown:
+                    w = f"\x1b[1;31m{w}\x1b[0m"
+                print(f"{i:2d}. {w}")
             print()
 
             if not prompt_yes_no(
@@ -593,7 +591,6 @@ def main(
             press_any_key_to_exit()
             raise typer.Exit(code=0)
     except KeyboardInterrupt:
-        print("\nInterrupted.\n")
         press_any_key_to_exit()
         raise typer.Exit(code=130)
 
