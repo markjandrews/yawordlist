@@ -8,17 +8,29 @@ import winsound
 from piper import PiperVoice, SynthesisConfig
 
 
+DEFAULT_SPEAKER_SPEED = 0.8
+
+
 class TTSManager:
     def __init__(
         self,
         model_path: str,
         cache_dir: str | pathlib.Path = "audio_cache",
         syn_config: SynthesisConfig | None = None,
+        speed: float = DEFAULT_SPEAKER_SPEED,
         debug: bool = False,
     ):
         self.model_path = model_path
         self.cache_dir = pathlib.Path(cache_dir)
-        self.syn_config = syn_config or SynthesisConfig()
+
+        # Piper uses `length_scale`: larger = slower.
+        # This wrapper exposes `speed`: smaller = slower.
+        # Mapping: length_scale = 1 / speed
+        if syn_config is None:
+            self.syn_config = SynthesisConfig(length_scale=1 / speed)
+        else:
+            syn_config.length_scale = 1 / speed
+            self.syn_config = syn_config
         self.debug = debug
         self._voice: PiperVoice | None = None
 
@@ -98,14 +110,11 @@ class TTSManager:
 if __name__ == "__main__":
     SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 
-    syn_config = SynthesisConfig(
-        length_scale=1.25,
-        normalize_audio=False,
-    )
-
     tts = TTSManager(
         model_path=str(SCRIPT_DIR / "tts" / "en_US-libritts-high.onnx"),
-        syn_config=syn_config,
+        # Old length_scale=1.25 maps to speed=0.8
+        speed=0.8,
+        syn_config=SynthesisConfig(normalize_audio=False),
         debug=True,
     )
     tts.speak("spaceship")

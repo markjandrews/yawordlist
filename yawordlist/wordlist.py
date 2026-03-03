@@ -7,6 +7,21 @@ import typer
 
 from spellchecker import SpellChecker
 
+from .reveal_mode import HIDDEN_WORD, RevealMode, cycle_reveal_mode, reveal_status_line
+from .tts_manager import TTSManager
+
+# Globals used by prompt_yes_no() for auditory prompts.
+single_player = False
+tts: TTSManager | None = None
+
+
+GAME_TITLE_TEXT = "YA Word List Spelling Game"
+GAME_GREETING_TEXT = "Welcome to the YAAR Word List Spelling Game!"
+CONFIRM_LIST_PROMPT_TEXT = "Confirm this is the list you want to use?"
+OUTCOME_CORRECT_TEXT = "CORRECT"
+OUTCOME_INCORRECT_TEXT = "INCORRECT"
+
+
 # -----------------------------
 # Data structures
 # -----------------------------
@@ -120,6 +135,34 @@ def _print_word_context(record: WordRecord, skip_command: str, *, show_last: boo
     Always prints the word header with the current attempt number. When show_last=True,
     also prints the status of the most recent recorded attempt (if any).
     """
+    _print_word_context2(record, skip_command=skip_command, show_last=show_last)
+
+
+def _print_word_context2(
+    record: WordRecord,
+    skip_command: str,
+    *,
+    show_last: bool = False,
+    single_player: bool = False,
+    reveal_mode: RevealMode | None = None,
+) -> None:
+    """Print current word info.
+
+    Text mode:
+      - Prints the word header with the current attempt number.
+      - When show_last=True, prints the status of the most recent recorded attempt (if any).
+
+    Single-player mode:
+      - Never prints the word.
+      - Prints Word #, Attempt #, and current reveal mode.
+    """
+    if single_player:
+        attempt_no = len(record.attempts) + 1
+        reveal = reveal_status_line(reveal_mode) if reveal_mode is not None else ""
+        spacer = " | " if reveal else ""
+        print(f"\nWord #: {record.index} | Attempt #: {attempt_no}{spacer}{reveal}")
+        return
+
     print(f"\nWord #{record.index}: {record.word} (#{len(record.attempts) + 1})")
     if not show_last:
         return
@@ -128,7 +171,20 @@ def _print_word_context(record: WordRecord, skip_command: str, *, show_last: boo
         return
     print(_attempt_status_line(record, record.attempts[-1], skip_command=skip_command))
 
-def print_progress_table(state: SessionState, skip_command: str) -> None:
+def _display_word_for_table(record: WordRecord, *, skip_command: str, reveal_mode: RevealMode) -> str:
+    if reveal_mode == RevealMode.ALL:
+        return record.word
+    if reveal_mode == RevealMode.CORRECT_ONLY:
+        return record.word if _count_correct_attempts(record) > 0 else HIDDEN_WORD
+    return HIDDEN_WORD
+
+
+def print_progress_table(
+    state: SessionState,
+    skip_command: str,
+    *,
+    reveal_mode: RevealMode | None = None,
+) -> None:
     print("\nProgress table:")
     print("-" * 120)
     header = f"{'#':<3} {'Word':<15} {'Attempts':<8} {'Correct':<8} {'Incorrect':<10} {'State':<6} {'Result'}"
@@ -147,7 +203,8 @@ def print_progress_table(state: SessionState, skip_command: str) -> None:
             result = "STOP"
         else:
             result = ""
-        row = f"{w.index:<3} {w.word:<15} {attempts_count:<8} {correct_count:<8} {incorrect_count:<10} {state_icon:<6} {result}"
+        word_cell = w.word if reveal_mode is None else _display_word_for_table(w, skip_command=skip_command, reveal_mode=reveal_mode)
+        row = f"{w.index:<3} {word_cell:<15} {attempts_count:<8} {correct_count:<8} {incorrect_count:<10} {state_icon:<6} {result}"
         print(row)
     print("-" * 120)
 
@@ -160,7 +217,13 @@ def prompt_yes_no(prompt: str, default: Optional[bool] = None) -> bool:
         else:
             suffix = "[y/n]"
 
-        ans = input(f"{prompt} {suffix}: ").strip().lower()
+        prompt_text = f"{prompt} {suffix}: "
+        print(prompt_text, end="", flush=True)
+
+        if single_player and tts is not None:
+            tts.speak(f"{prompt}")
+
+        ans = input("").strip().lower()
         if ans == "" and default is not None:
             return default
         if ans in ("y", "yes"):
@@ -244,7 +307,13 @@ def press_any_key_to_exit(prompt: str = "Press any key to exit...") -> None:
 # Core game logic
 # -----------------------------
 
-def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
+def run_spelling_session(
+    words: List[str],
+    skip_command: str,
+    *,
+    single_player: bool = False,
+    tts: TTSManager | None = None,
+) -> SessionState:
     # Create session state
     state = SessionState(
         words=[WordRecord(index=i + 1, word=w) for i, w in enumerate(words)]
@@ -252,7 +321,41 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
 
     word_index = 0
     undo_command = "/undo"
+    show_command = "/show"
+    say_command = "/say"
     show_last_on_entry = False
+
+    reveal_mode: RevealMode | None = RevealMode.NONE if single_player else None
+
+    def speak(text: str) -> None:
+        if single_player and tts is not None:
+            tts.speak(text)
+
+    def speak_attempt_result(*, record: WordRecord, is_correct: bool) -> None:
+        # attempt number is 1-based and equals current number of recorded attempts
+        import time
+
+        attempt_no = len(record.attempts)
+        outcome = "CORRECT" if is_correct else "INCORRECT"
+        pause_s = 0.1
+
+        speak(f"Word {record.index}")
+        time.sleep(pause_s)
+        speak(f"Attempt {attempt_no}")
+        time.sleep(pause_s)
+        speak(outcome)
+
+    def speak_word_entry(*, record: WordRecord) -> None:
+        import time
+
+        attempt_no = len(record.attempts) + 1
+        pause_s = 0.1
+
+        speak(f"Word {record.index}")
+        time.sleep(pause_s)
+        speak(f"Attempt {attempt_no}")
+        time.sleep(pause_s)
+        speak(record.word)
 
     while 0 <= word_index < len(state.words):
         record = state.words[word_index]
@@ -263,9 +366,18 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
         def print_input_prompt() -> None:
             print("> ", end="", flush=True)
 
-        print_progress_table(state, skip_command=skip_command)
-        _print_word_context(record, skip_command=skip_command, show_last=show_last_on_entry)
+        print_progress_table(state, skip_command=skip_command, reveal_mode=reveal_mode)
+        _print_word_context2(
+            record,
+            skip_command=skip_command,
+            show_last=show_last_on_entry,
+            single_player=single_player,
+            reveal_mode=reveal_mode,
+        )
         show_last_on_entry = False
+
+        if single_player:
+            speak_word_entry(record=record)
 
         print_input_prompt()
 
@@ -295,6 +407,25 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
                     break
                 continue
 
+            if single_player and ev == "<LEFT>":
+                speak(record.word)
+                continue
+
+            if single_player and ev == "<RIGHT>":
+                reveal_mode = cycle_reveal_mode(reveal_mode or RevealMode.NONE)
+                print()
+                print_progress_table(state, skip_command=skip_command, reveal_mode=reveal_mode)
+                _print_word_context2(
+                    record,
+                    skip_command=skip_command,
+                    single_player=True,
+                    reveal_mode=reveal_mode,
+                )
+                print_input_prompt()
+                if current:
+                    print(current, end="", flush=True)
+                continue
+
             # Ctrl+C ends session (summary).
             if ev == "\x03":
                 raise KeyboardInterrupt
@@ -306,7 +437,13 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
                 record.attempts.pop()
                 _recompute_record_result(record, skip_command=skip_command)
                 print("\nUNDO\n")
-                _print_word_context(record, skip_command=skip_command, show_last=True)
+                _print_word_context2(
+                    record,
+                    skip_command=skip_command,
+                    show_last=True,
+                    single_player=single_player,
+                    reveal_mode=reveal_mode,
+                )
                 current = ""
                 position = 0
                 print_input_prompt()
@@ -318,11 +455,19 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
                 if current:
                     record.attempts.append(current)
                     record.attempted = True
-                    if current.strip().lower() == record.word.lower():
+                    is_correct = current.strip().lower() == record.word.lower()
+                    if is_correct:
                         record.result = "correct"
+                    if single_player:
+                        speak_attempt_result(record=record, is_correct=is_correct)
                     current = ""
                     position = 0
-                    _print_word_context(record, skip_command=skip_command)
+                    _print_word_context2(
+                        record,
+                        skip_command=skip_command,
+                        single_player=single_player,
+                        reveal_mode=reveal_mode,
+                    )
                     print_input_prompt()
                     continue
 
@@ -375,7 +520,36 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
                         _recompute_record_result(record, skip_command=skip_command)
                     print("\nUNDO\n")
 
-                    _print_word_context(record, skip_command=skip_command, show_last=True)
+                    _print_word_context2(
+                        record,
+                        skip_command=skip_command,
+                        show_last=True,
+                        single_player=single_player,
+                        reveal_mode=reveal_mode,
+                    )
+                    current = ""
+                    position = 0
+                    print_input_prompt()
+                    continue
+
+                if single_player and cur_norm == show_command:
+                    reveal_mode = cycle_reveal_mode(reveal_mode or RevealMode.NONE)
+                    print()
+                    print_progress_table(state, skip_command=skip_command, reveal_mode=reveal_mode)
+                    _print_word_context2(
+                        record,
+                        skip_command=skip_command,
+                        single_player=True,
+                        reveal_mode=reveal_mode,
+                    )
+                    current = ""
+                    position = 0
+                    print_input_prompt()
+                    continue
+
+                if single_player and cur_norm == say_command:
+                    speak(record.word)
+                    print()
                     current = ""
                     position = 0
                     print_input_prompt()
@@ -392,7 +566,10 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
                         break
                     return state
 
-                if not (skip_norm.startswith(cur_norm) or undo_norm.startswith(cur_norm)):
+                prefixes = [skip_norm, undo_norm]
+                if single_player:
+                    prefixes.extend([show_command.strip().lower(), say_command.strip().lower()])
+                if not any(p.startswith(cur_norm) for p in prefixes):
                     print("\nInvalid command.\n")
                     current = ""
                     position = 0
@@ -406,18 +583,29 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
             expected = record.word[position]
             if ev.lower() != expected.lower():
                 attempt = f"{current}{ev}"
+                if single_player:
+                    speak(ev)
                 print(f"\nIncorrect letter '{ev}' at position {position + 1} (expected '{expected}').\n")
                 record.attempts.append(attempt)
                 record.attempted = True
+                if single_player:
+                    speak_attempt_result(record=record, is_correct=False)
                 current = ""
                 position = 0
-                _print_word_context(record, skip_command=skip_command)
+                _print_word_context2(
+                    record,
+                    skip_command=skip_command,
+                    single_player=single_player,
+                    reveal_mode=reveal_mode,
+                )
                 print_input_prompt()
                 continue
 
             current += ev
             position += 1
             print(ev, end="", flush=True)
+            if single_player:
+                speak(ev)
 
             if position == len(record.word):
                 # Grace window: allow an immediate trailing key to be treated as part of the same attempt.
@@ -432,9 +620,16 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
                     record.attempts.append(current)
                     record.attempted = True
                     record.result = "correct"
+                    if single_player:
+                        speak_attempt_result(record=record, is_correct=True)
                     current = ""
                     position = 0
-                    _print_word_context(record, skip_command=skip_command)
+                    _print_word_context2(
+                        record,
+                        skip_command=skip_command,
+                        single_player=single_player,
+                        reveal_mode=reveal_mode,
+                    )
                     print_input_prompt()
                     continue
 
@@ -449,14 +644,23 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
                     # Trailing character within grace: treat as part of the same attempt -> incorrect at <end>.
                     attempt = f"{current}{ev2}"
                     print(ev2, end="", flush=True)
+                    if single_player:
+                        speak(ev2)
                     print(
                         f"\nIncorrect letter '{ev2}' at position {len(record.word) + 1} (expected <end>).\n"
                     )
                     record.attempts.append(attempt)
                     record.attempted = True
+                    if single_player:
+                        speak_attempt_result(record=record, is_correct=False)
                     current = ""
                     position = 0
-                    _print_word_context(record, skip_command=skip_command)
+                    _print_word_context2(
+                        record,
+                        skip_command=skip_command,
+                        single_player=single_player,
+                        reveal_mode=reveal_mode,
+                    )
                     print_input_prompt()
                     continue
 
@@ -466,9 +670,16 @@ def run_spelling_session(words: List[str], skip_command: str) -> SessionState:
                 record.attempts.append(current)
                 record.attempted = True
                 record.result = "correct"
+                if single_player:
+                    speak_attempt_result(record=record, is_correct=True)
                 current = ""
                 position = 0
-                _print_word_context(record, skip_command=skip_command)
+                _print_word_context2(
+                    record,
+                    skip_command=skip_command,
+                    single_player=single_player,
+                    reveal_mode=reveal_mode,
+                )
                 print_input_prompt()
 
     return state
@@ -617,6 +828,11 @@ def main(
         max=2,
         help="1 = shuffle within each file; 2 = mix all files then shuffle",
     ),
+    single_player_mode: bool = typer.Option(
+        False,
+        "--single-player/--no-single-player",
+        help="Single-player auditory mode (hidden words + TTS)",
+    ),
 ):
     try:
         while True:
@@ -629,7 +845,24 @@ def main(
 
             skip_command = choose_skip_command(words, base="/pass")
 
-            print("Structured Spelling Game (letter-by-letter mode)\n")
+            global single_player, tts
+            single_player = single_player_mode
+            tts = None
+            if single_player:
+                model_path = Path(__file__).resolve().parent / "tts" / "en_US-libritts-high.onnx"
+                tts = TTSManager(model_path=str(model_path))
+                tts.warm_cache(
+                    [
+                        GAME_GREETING_TEXT,
+                        CONFIRM_LIST_PROMPT_TEXT,
+                        OUTCOME_CORRECT_TEXT,
+                        OUTCOME_INCORRECT_TEXT,
+                    ]
+                )
+
+            print(f"{GAME_TITLE_TEXT}\n")
+            if single_player and tts is not None:
+                tts.speak(GAME_GREETING_TEXT)
 
             spell = SpellChecker()
             unknown = spell.unknown([w.lower() for w in words])
@@ -642,16 +875,17 @@ def main(
                 print(f"{i:2d}. {w}")
             print()
 
-            if not prompt_yes_no(
-                "Confirm this is the list you want to use?", default=True
-            ):
+            if not prompt_yes_no(CONFIRM_LIST_PROMPT_TEXT, default=True):
                 print("\nExiting. Update input list to continue.")
                 press_any_key_to_exit()
                 raise typer.Exit(code=0)
 
-            print(f"\nSkip token: {skip_command}\n")
-
-            state = run_spelling_session(words, skip_command=skip_command)
+            state = run_spelling_session(
+                words,
+                skip_command=skip_command,
+                single_player=single_player,
+                tts=tts,
+            )
             print_session_summary(state, skip_command=skip_command)
 
             if prompt_yes_no("Play again?", default=False):
